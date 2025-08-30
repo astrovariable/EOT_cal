@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Equation of Time Explorer</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; margin: 40px; }
+    #result { font-size: 1.1em; margin-top: 20px; line-height: 1.6; }
+    input, button, label { margin: 8px; padding: 8px; font-size: 1em; }
+    .row { margin-top: 8px; }
+    .muted { color: #555; font-size: 0.95em; }
+    #chart-container { width: 90%; max-width: 800px; margin: 40px auto; }
+  </style>
+</head>
+<body>
+  <h1>Equation of Time Explorer</h1>
+
+  <!-- City search box -->
+  <div class="row">
+    <label for="cityInput">Enter City Name:</label><br>
+    <input type="text" id="cityInput" value="Delhi" list="cityList">
+    <datalist id="cityList"></datalist>
+  </div>
+
+  <!-- Date controls -->
+  <div class="row">
+    <label for="dateInput">Select Date:</label><br>
+    <input type="date" id="dateInput" value="2025-08-30">
+  </div>
+
+  <div class="row">
+    <button onclick="changeDate(-1)">⬅ Previous Day</button>
+    <button onclick="changeDate(1)">Next Day ➡</button>
+  </div>
+
+  <!-- Slider scrub -->
+  <div class="row">
+    <label for="daySlider">Scrub through year:</label><br>
+    <input type="range" id="daySlider" min="1" max="365" value="242" style="width:60%;">
+  </div>
+
+  <div id="result"></div>
+
+  <!-- Chart -->
+  <div id="chart-container">
+    <canvas id="eotChart"></canvas>
+  </div>
+
+  <p class="muted">
+    Notes: EOT is date-dependent (apparent − mean solar time). Longitude correction is
+    4 × (longitude − 82.5°E) minutes. Total = EOT + Longitude correction.<br>
+    Use <b>Apparent Solar Time = IST + Total</b>. Solar noon (IST) ≈ 12:00 − Total.
+  </p>
+
+  <script>
+    const IST_MERIDIAN = 82.5; // degrees East
+
+    // 🔹 Small base dataset of Indian cities (fast lookup, expandable)
+    const cityDatabase = {
+      "Delhi": 77.10,
+      "Mumbai": 72.88,
+      "Kolkata": 88.36,
+      "Chennai": 80.27,
+      "Bengaluru": 77.59,
+      "Hyderabad": 78.49,
+      "Ahmedabad": 72.57,
+      "Jaipur": 75.79,
+      "Lucknow": 80.95,
+      "Patna": 85.14,
+      "Varanasi": 83.01,
+      "Guwahati": 91.74,
+      "Pune": 73.85,
+      "Nagpur": 79.09
+    };
+
+    // Populate datalist for autocomplete
+    window.addEventListener("DOMContentLoaded", () => {
+      const list = document.getElementById("cityList");
+      Object.keys(cityDatabase).forEach(city => {
+        const opt = document.createElement("option");
+        opt.value = city;
+        list.appendChild(opt);
+      });
+    });
+
+    function equationOfTime(dateObj) {
+      const start = new Date(dateObj.getFullYear(), 0, 0);
+      const diff = dateObj - start;
+      const oneDay = 1000 * 60 * 60 * 24;
+      const d = Math.floor(diff / oneDay);
+      const y = dateObj.getFullYear();
+      const D = 6.240 + 0.01720 * (365.25 * (y - 2000) + d);
+      return -7.659 * Math.sin(D) + 9.863 * Math.sin(2 * D + 3.5932);
+    }
+
+    function longitudeCorrectionMinutes(lon) {
+      return (lon - IST_MERIDIAN) * 4.0;
+    }
+
+    function signed(x, digits = 2) {
+      const n = Number(x).toFixed(digits);
+      return (x >= 0 ? "+" : "") + n;
+    }
+
+    // 🔹 Get longitude from local DB or OSM API
+    async function getLongitude(cityName) {
+      if (cityDatabase[cityName]) {
+        return cityDatabase[cityName];
+      }
+      const url = `https://nominatim.openstreetmap.org/search?city=${encodeURIComponent(cityName)}&country=India&format=json`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.length > 0) {
+        const lon = parseFloat(data[0].lon);
+        // Cache result for faster next time
+        cityDatabase[cityName] = lon;
+        return lon;
+      } else {
+        throw new Error("City not found");
+      }
+    }
+
+    // 🔹 Main calculation
+    async function fetchEOT(dateStr) {
+      const date = new Date(dateStr);
+      const eot = equationOfTime(date);
+
+      const cityName = document.getElementById("cityInput").value.trim();
+      let lon;
+      try {
+        lon = await getLongitude(cityName);
+      } catch (err) {
+        document.getElementById("result").innerHTML =
+          `<b>${cityName}</b>: not found. Try another city.`;
+        return;
+      }
+
+      const lonCorr = longitudeCorrectionMinutes(lon);
+      const total = eot + lonCorr;
+      const solarNoonIST = timeStringWithOffsetFromNoon(-total);
+
+      document.getElementById("result").innerHTML = `
+        <b>${cityName} (${lon.toFixed(2)}°E)</b> on ${dateStr}<br>
+        EOT: <b>${signed(eot)} min</b><br>
+        Longitude correction: <b>${signed(lonCorr)} min</b><br>
+        <hr style="width:280px; border:none; border-top:1px solid #ccc;">
+        <div><b>Total correction: ${signed(total)} min</b></div>
+        <div class="muted">Solar noon ≈ <b>${solarNoonIST}</b> IST</div>
+      `;
+
+      drawChart(); // redraw with new city
+    }
+
+    function timeStringWithOffsetFromNoon(offsetMin) {
+      const base = new Date("2000-01-01T12:00:00");
+      base.setMinutes(base.getMinutes() + Math.round(offsetMin));
+      const hh = String(base.getHours()).padStart(2, "0");
+      const mm = String(base.getMinutes()).padStart(2, "0");
+      return `${hh}:${mm}`;
+    }
+
+    async function changeDate(offset) {
+      const input = document.getElementById("dateInput");
+      let date = new Date(input.value);
+      date.setDate(date.getDate() + offset);
+      const newDate = date.toISOString().slice(0, 10);
+      input.value = newDate;
+      document.getElementById("daySlider").value = dayOfYear(newDate);
+      await fetchEOT(newDate);
+    }
+
+    function dayOfYear(dateStr) {
+      const d = new Date(dateStr);
+      const start = new Date(d.getFullYear(), 0, 0);
+      const diff = d - start;
+      return Math.floor(diff / (1000 * 60 * 60 * 24));
+    }
+
+    // Slider event
+    document.getElementById("daySlider").addEventListener("input", async (e) => {
+      const year = new Date(document.getElementById("dateInput").value).getFullYear();
+      const day = parseInt(e.target.value);
+      const newDate = new Date(year, 0, day);
+      const newDateStr = newDate.toISOString().slice(0, 10);
+      document.getElementById("dateInput").value = newDateStr;
+      await fetchEOT(newDateStr);
+    });
+
+    // Chart
+    let chart;
+    async function drawChart() {
+      const year = new Date(document.getElementById("dateInput").value).getFullYear();
+      const cityName = document.getElementById("cityInput").value.trim();
+      let lon;
+      try {
+        lon = await getLongitude(cityName);
+      } catch {
+        return;
+      }
+
+      const labels = [], eotData = [], totalData = [];
+      for (let d = 1; d <= 365; d++) {
+        const date = new Date(year, 0, d);
+        labels.push(d);
+        const eot = equationOfTime(date);
+        const lonCorr = longitudeCorrectionMinutes(lon);
+        eotData.push(eot);
+        totalData.push(eot + lonCorr);
+      }
+      if (chart) chart.destroy();
+      const ctx = document.getElementById("eotChart").getContext("2d");
+      chart = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels: labels,
+          datasets: [
+            { label: "EOT (minutes)", data: eotData, borderColor: "blue", fill: false },
+            { label: "Total Correction (minutes)", data: totalData, borderColor: "red", fill: false }
+          ]
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { position: "top" } },
+          scales: {
+            x: { title: { display: true, text: "Day of Year" } },
+            y: { title: { display: true, text: "Minutes" } }
+          }
+        }
+      });
+    }
+
+    // Init
+    document.addEventListener("DOMContentLoaded", async () => {
+      const dateInput = document.getElementById("dateInput");
+      await fetchEOT(dateInput.value);
+
+      document.getElementById("cityInput").addEventListener("change", async () => {
+        await fetchEOT(dateInput.value);
+      });
+    });
+  </script>
+</body>
+</html>
